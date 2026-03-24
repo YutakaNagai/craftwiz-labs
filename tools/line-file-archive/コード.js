@@ -1,18 +1,18 @@
 //スプレッドシートのB1セルに配置したLINEボットのアクセストークンを取得
-const ACCESS_TOKEN = SpreadsheetApp.getActiveSheet().getRange(1, 2).getValue();
-//Googleドライブに作ったフォルダのURL(ここにOCRした画像を保存)
-const FOLDER_ID = ScriptProperties.getProperty("FOLDER_ID");
+const ACCESS_TOKEN = SpreadsheetApp.getSheetByName("settings")
+  .getRange(1, 2)
+  .getValue();
 //LINE返信用エンドポイント
 const REPLY_URL = "https://api.line.me/v2/bot/message/reply";
 
-//LINEに投稿された写真を自動保存するためのGoogleドライブのフォルダを作成
-function makeDirectory() {
-  //スプレッドシートのB2セルからフォルダ名を取得
-  const folderName = SpreadsheetApp.getActiveSheet().getRange(2, 2).getValue();
-  //Googleドライブにフォルダを作成し、フォルダIDを取得
-  const folderId = DriveApp.createFolder(folderName).getId();
-  //GoogleドライブのフォルダIDをスクリプトプロパティに保存
-  ScriptProperties.setProperty("FOLDER_ID", folderId);
+function getFolderIdFromUrl(url) {
+  const match = url.match(/[-\w]{25,}/);
+
+  if (!match) {
+    return;
+  }
+
+  return match[0];
 }
 
 //LINEにメッセージを送信する関数
@@ -42,9 +42,9 @@ function getImage(id) {
   return img;
 }
 //LINEトークに投稿された画像をGoogleドライブに保存する関数
-function saveImage(blob) {
+function saveImage(blob, folderId) {
   try {
-    const folder = DriveApp.getFolderById(FOLDER_ID);
+    const folder = DriveApp.getFolderById(folderId);
     const file = folder.createFile(blob);
     return file.getId();
   } catch (e) {
@@ -55,7 +55,7 @@ function saveImage(blob) {
 //スクリプトが紐付いたスプレッドシートに投稿したユーザーIDとタイムスタンプを記録
 function recodeUser(userId, timestamp, id) {
   //シートが1つしかない想定でアクティブなシートを読み込み、最終行を取得
-  const mySheet = SpreadsheetApp.getActiveSheet();
+  const mySheet = SpreadsheetApp.getSheetByName("シート1");
   const lastRow = mySheet.getLastRow();
   //スプレッドシートに写真保存が実行された履歴を保存
   mySheet.getRange(1 + lastRow, 1).setValue(userId);
@@ -73,7 +73,27 @@ function recodeUser(userId, timestamp, id) {
 
 function doPost(e) {
   //アクティブなスプレッドシートを読み込み、メッセージフラブを読み取り
-  const mySheet = SpreadsheetApp.getActiveSheet();
+  const mySheet = SpreadsheetApp.getSheetByName("シート1");
+  const settingSheet = SpreadsheetApp.getSheetByName("settings");
+  let folderId;
+  try {
+    folderId = getFolderIdFromUrl(settingSheet.getRange(2, 2).getValue());
+    // if (!folderId) {
+    //   sendMsg(REPLY_URL, {
+    //     replyToken: event.replyToken,
+    //     messages: [
+    //       {
+    //         type: "text",
+    //         text: "保存先フォルダが未設定です\nFOLDER_ID: " + FOLDER_ID,
+    //       },
+    //     ],
+    //   });
+    //   return;
+    // }
+  } catch (e) {
+    throw new Error(e);
+  }
+
   const mesFlag = mySheet.getRange(3, 2).getValue();
   //LINEWebhookで受信したイベントの数だけ処理を実行
   for (let event of JSON.parse(e.postData.contents).events) {
@@ -91,7 +111,7 @@ function doPost(e) {
     if (event.message.type == "image") {
       try {
         let img = getImage(event.message.id);
-        let id = saveImage(img);
+        let id = saveImage(img, folderId);
         recodeUser(event.source.userId, event.timestamp, id, event);
         if (mesFlag === "ON") {
           sendMsg(REPLY_URL, {
@@ -108,7 +128,7 @@ function doPost(e) {
           });
         }
       } catch (e) {
-        Console.log(e);
+        console.log(e);
       }
       //Webhookのメッセージタイプがテキストで「写真保存先」が含まれていると、保存先を通知
     } else if (event.message.type == "text") {
@@ -120,7 +140,7 @@ function doPost(e) {
               type: "text",
               text:
                 "写真保存先↓\nhttps://drive.google.com/drive/folders/" +
-                FOLDER_ID,
+                folderId,
             },
           ],
         });
@@ -135,7 +155,7 @@ function doPost(e) {
 
 // デバッグログ出力用関数
 function writeDebugLog(data) {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("logs");
+  const sheet = SpreadsheetApp.getSheetByName("logs");
 
   sheet.appendRow([
     new Date(),
