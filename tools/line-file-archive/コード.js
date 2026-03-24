@@ -30,7 +30,7 @@ function sendMsg(url, payload) {
   UrlFetchApp.fetch(url, {
     headers: {
       "Content-Type": "application/json; charset=UTF-8",
-      Authorization: "Bearer " + ACCESS_TOKEN,
+      Authorization: "Bearer " + getAccessToken(),
     },
     method: "post",
     payload: JSON.stringify(payload),
@@ -43,7 +43,7 @@ function getImage(id) {
   const url = "https://api-data.line.me/v2/bot/message/" + id + "/content";
   const data = UrlFetchApp.fetch(url, {
     headers: {
-      Authorization: "Bearer " + ACCESS_TOKEN,
+      Authorization: "Bearer " + getAccessToken(),
     },
     method: "get",
   });
@@ -83,7 +83,7 @@ function recodeUser(userId, timestamp, id) {
 
 function doPost(e) {
   //アクティブなスプレッドシートを読み込み、メッセージフラブを読み取り
-  const mySheet = getSheet.getSheetByName("シート1");
+  const mySheet = getSheet().getSheetByName("シート1");
   let folderId;
   try {
     folderId = getFolderId();
