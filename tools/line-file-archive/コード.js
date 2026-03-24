@@ -1,11 +1,21 @@
-//スプレッドシートのB1セルに配置したLINEボットのアクセストークンを取得
-const ACCESS_TOKEN = SpreadsheetApp.getSheetByName("settings")
-  .getRange(1, 2)
-  .getValue();
 //LINE返信用エンドポイント
 const REPLY_URL = "https://api.line.me/v2/bot/message/reply";
 
-function getFolderIdFromUrl(url) {
+function getSheet() {
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function getSettings() {
+  return getSheet().getSheetByName("settings");
+}
+
+//スプレッドシートのB1セルに配置したLINEボットのアクセストークンを取得
+function getAccessToken() {
+  return getSettings().getRange(1, 2).getValue();
+}
+
+function getFolderId() {
+  const url = getSettings().getRange(2, 2).getValue();
   const match = url.match(/[-\w]{25,}/);
 
   if (!match) {
@@ -55,7 +65,7 @@ function saveImage(blob, folderId) {
 //スクリプトが紐付いたスプレッドシートに投稿したユーザーIDとタイムスタンプを記録
 function recodeUser(userId, timestamp, id) {
   //シートが1つしかない想定でアクティブなシートを読み込み、最終行を取得
-  const mySheet = SpreadsheetApp.getSheetByName("シート1");
+  const mySheet = getSheet().getSheetByName("シート1");
   const lastRow = mySheet.getLastRow();
   //スプレッドシートに写真保存が実行された履歴を保存
   mySheet.getRange(1 + lastRow, 1).setValue(userId);
@@ -73,11 +83,10 @@ function recodeUser(userId, timestamp, id) {
 
 function doPost(e) {
   //アクティブなスプレッドシートを読み込み、メッセージフラブを読み取り
-  const mySheet = SpreadsheetApp.getSheetByName("シート1");
-  const settingSheet = SpreadsheetApp.getSheetByName("settings");
+  const mySheet = getSheet.getSheetByName("シート1");
   let folderId;
   try {
-    folderId = getFolderIdFromUrl(settingSheet.getRange(2, 2).getValue());
+    folderId = getFolderId();
     // if (!folderId) {
     //   sendMsg(REPLY_URL, {
     //     replyToken: event.replyToken,
@@ -155,7 +164,7 @@ function doPost(e) {
 
 // デバッグログ出力用関数
 function writeDebugLog(data) {
-  const sheet = SpreadsheetApp.getSheetByName("logs");
+  const sheet = getSheet().getSheetByName("logs");
 
   sheet.appendRow([
     new Date(),
