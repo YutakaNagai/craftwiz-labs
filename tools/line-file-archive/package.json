@@ -1,0 +1,22 @@
+{
+  "name": "line-file-archive",
+  "version": "1.0.0",
+  "description": "LINEのトーク上に貼付したファイルを自動で検出し、Googleドライブの指定したフォルダにアップロードするbot",
+  "main": "コード.js",
+  "scripts": {
+    "push": "clasp push",
+    "version": "clasp version \"update\"",
+    "deploy": "dotenv clasp deploy -i $DEPLOYMENT_ID",
+    "release": "npm run push && npm run version && npm run deploy",
+    "open": "clasp open",
+    "logs": "clasp logs --watch"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@google/clasp": "^3.3.0",
+    "dotenv": "^17.3.1",
+    "dotenv-cli": "^11.0.0"
+  }
+}
