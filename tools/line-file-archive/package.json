@@ -6,7 +6,7 @@
   "scripts": {
     "push": "clasp push",
     "version": "clasp version \"update\"",
-    "deploy": "dotenv clasp deploy -i $DEPLOYMENT_ID",
+    "deploy": "dotenv -- bash -lc 'clasp deploy -i \"$DEPLOYMENT_ID\"'",
     "release": "npm run push && npm run version && npm run deploy",
     "open": "clasp open",
     "logs": "clasp logs --watch"

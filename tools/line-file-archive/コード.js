@@ -37,29 +37,124 @@ function sendMsg(url, payload) {
   });
 }
 
-//LINEのトーク画面にユーザーが投稿した画像を取得し、返却する関数
-function getImage(id) {
-  //画像取得用エンドポイント
-  const url = "https://api-data.line.me/v2/bot/message/" + id + "/content";
-  const data = UrlFetchApp.fetch(url, {
+// LINEのメッセージコンテンツ(画像/動画/音声/ファイル)を取得してBlobで返す
+function fetchMessageContentBlob(messageId) {
+  const url =
+    "https://api-data.line.me/v2/bot/message/" + messageId + "/content";
+
+  // 失敗時の理由(ステータス/本文)を取得できるように muteHttpExceptions を有効化
+  const res = UrlFetchApp.fetch(url, {
     headers: {
       Authorization: "Bearer " + getAccessToken(),
     },
     method: "get",
+    muteHttpExceptions: true,
   });
-  //ファイル名を被らせないように、今日のDateのミリ秒をファイル名につけて保存
-  const img = data.getBlob().setName(Number(new Date()) + ".jpg");
-  return img;
-}
-//LINEトークに投稿された画像をGoogleドライブに保存する関数
-function saveImage(blob, folderId) {
-  try {
-    const folder = DriveApp.getFolderById(folderId);
-    const file = folder.createFile(blob);
-    return file.getId();
-  } catch (e) {
-    return false;
+
+  const code = res.getResponseCode();
+  if (code !== 200) {
+    const body = res.getContentText();
+    throw new Error(
+      `LINE content fetch failed. messageId=${messageId} code=${code} body=${body}`,
+    );
   }
+
+  return res.getBlob();
+}
+
+function normalizeMimeType(mimeType) {
+  if (!mimeType) return "";
+  return String(mimeType).split(";")[0].trim().toLowerCase();
+}
+
+function guessExtensionFromMimeType(mimeType) {
+  const mt = normalizeMimeType(mimeType);
+
+  const map = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+
+    "audio/mp4": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+
+    "application/pdf": ".pdf",
+    "application/zip": ".zip",
+    "text/plain": ".txt",
+  };
+
+  return map[mt] || ".bin";
+}
+
+function sanitizeFileName(fileName) {
+  if (!fileName) return "";
+
+  // Drive上で扱いにくい文字をざっくり置換
+  return String(fileName)
+    .replace(/[\\\/\?\*\:\"\<\>\|]/g, "_")
+    .trim();
+}
+
+function createTimestampedName(extOrFileName) {
+  const ts = String(Date.now());
+
+  if (!extOrFileName) return ts;
+
+  // 拡張子っぽい場合(.mp4等)
+  if (String(extOrFileName).startsWith(".")) return ts + extOrFileName;
+
+  // 元ファイル名が渡された場合
+  return ts + "_" + sanitizeFileName(extOrFileName);
+}
+
+// 画像/動画/音声/ファイルを取得し、Drive保存用にファイル名を付与して返す
+function getImage(id) {
+  const blob = fetchMessageContentBlob(id);
+  const ext = guessExtensionFromMimeType(blob.getContentType()) || ".jpg";
+  return blob.setName(createTimestampedName(ext));
+}
+
+function getVideo(id) {
+  const blob = fetchMessageContentBlob(id);
+  const ext = guessExtensionFromMimeType(blob.getContentType()) || ".mp4";
+  return blob.setName(createTimestampedName(ext));
+}
+
+function getAudio(id) {
+  const blob = fetchMessageContentBlob(id);
+  const ext = guessExtensionFromMimeType(blob.getContentType()) || ".m4a";
+  return blob.setName(createTimestampedName(ext));
+}
+
+// fileメッセージは event.message.fileName が取れるので、それを優先して名前に使う
+function getFile(id, originalFileName) {
+  const blob = fetchMessageContentBlob(id);
+
+  if (originalFileName) {
+    return blob.setName(createTimestampedName(originalFileName));
+  }
+
+  const ext = guessExtensionFromMimeType(blob.getContentType());
+  return blob.setName(createTimestampedName(ext));
+}
+
+//LINEトークに投稿された画像/動画/音声/ファイルをGoogleドライブに保存する関数
+function saveFile(blob, folderId) {
+  if (!folderId) {
+    throw new Error("folderId is empty. settings!B2 を確認してください。");
+  }
+
+  const folder = DriveApp.getFolderById(folderId);
+  const file = folder.createFile(blob);
+  return file.getId();
 }
 
 //スクリプトが紐付いたスプレッドシートに投稿したユーザーIDとタイムスタンプを記録
@@ -84,28 +179,66 @@ function recodeUser(userId, timestamp, id) {
 function doPost(e) {
   //アクティブなスプレッドシートを読み込み、メッセージフラブを読み取り
   const mySheet = getSheet().getSheetByName("シート1");
+  const mesFlag = mySheet.getRange(3, 2).getValue();
+
+  const body = JSON.parse(e.postData.contents || "{}");
+  const events = body.events || [];
+
   let folderId;
   try {
     folderId = getFolderId();
-    // if (!folderId) {
-    //   sendMsg(REPLY_URL, {
-    //     replyToken: event.replyToken,
-    //     messages: [
-    //       {
-    //         type: "text",
-    //         text: "保存先フォルダが未設定です\nFOLDER_ID: " + FOLDER_ID,
-    //       },
-    //     ],
-    //   });
-    //   return;
-    // }
-  } catch (e) {
-    throw new Error(e);
+  } catch (err) {
+    // ここで落とすとLINE側が再送するので、ログに残して200応答で返す
+    writeDebugLog({
+      event: "doPost",
+      status: "error",
+      note: `getFolderId failed: ${err}`,
+    });
+    return ContentService.createTextOutput(
+      JSON.stringify({ content: "post ok" }),
+    ).setMimeType(ContentService.MimeType.JSON);
   }
 
-  const mesFlag = mySheet.getRange(3, 2).getValue();
+  // 保存先未設定の場合も、Webhookの再送を避けるため 200 を返しつつログに残す
+  if (!folderId) {
+    for (let event of events) {
+      writeDebugLog({
+        event: event.type,
+        messageType: event?.message?.type,
+        messageId: event?.message?.id,
+        groupId: event?.source?.groupId,
+        userId: event?.source?.userId,
+        status: "error",
+        note: "folderId is empty. settings!B2 を確認してください。",
+      });
+    }
+
+    return ContentService.createTextOutput(
+      JSON.stringify({ content: "post ok" }),
+    ).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  const handlers = {
+    image: {
+      getter: (e) => getImage(e.message.id),
+      savedText: "画像を保存しました。",
+    },
+    video: {
+      getter: (e) => getVideo(e.message.id),
+      savedText: "動画を保存しました。",
+    },
+    audio: {
+      getter: (e) => getAudio(e.message.id),
+      savedText: "音声ファイルを保存しました。",
+    },
+    file: {
+      getter: (e) => getFile(e.message.id, e.message.fileName),
+      savedText: "ファイルを保存しました。",
+    },
+  };
+
   //LINEWebhookで受信したイベントの数だけ処理を実行
-  for (let event of JSON.parse(e.postData.contents).events) {
+  for (let event of events) {
     writeDebugLog({
       event: event.type,
       messageType: event?.message?.type,
@@ -116,44 +249,89 @@ function doPost(e) {
       note: "webhook ok",
     });
 
-    //Webhookのメッセージタイプが画像の場合のみ処理を実行
-    if (event.message.type == "image") {
-      try {
-        let img = getImage(event.message.id);
-        let id = saveImage(img, folderId);
-        recodeUser(event.source.userId, event.timestamp, id, event);
-        if (mesFlag === "ON") {
-          sendMsg(REPLY_URL, {
-            replyToken: event.replyToken,
-            messages: [
-              {
-                type: "text",
-                text:
-                  "画像保存しました。\nhttps://drive.google.com/file/d/" +
-                  id +
-                  "\n",
-              },
-            ],
-          });
-        }
-      } catch (e) {
-        console.log(e);
-      }
-      //Webhookのメッセージタイプがテキストで「写真保存先」が含まれていると、保存先を通知
-    } else if (event.message.type == "text") {
-      if (event.message.text.indexOf("画像保存先") > -1) {
+    // messageイベント以外(follow/unfollow等)は message が無いのでスキップ
+    const messageType = event?.message?.type;
+    if (event.type !== "message" || !messageType) {
+      continue;
+    }
+
+    // テキストはここで別処理
+    if (messageType === "text") {
+      const text = String(event.message.text || "");
+
+      // Webhookのメッセージタイプがテキストで「画像保存先」が含まれていると、保存先を通知
+      if (text.indexOf("保存先") > -1) {
         sendMsg(REPLY_URL, {
           replyToken: event.replyToken,
           messages: [
             {
               type: "text",
               text:
-                "写真保存先↓\nhttps://drive.google.com/drive/folders/" +
+                "保存先フォルダ↓\nhttps://drive.google.com/drive/folders/" +
                 folderId,
             },
           ],
         });
       }
+
+      continue;
+    }
+
+    // 画像/動画/音声/ファイルは共通処理
+    const h = handlers[messageType];
+    if (!h) continue;
+
+    try {
+      const blobOrFile = h.getter(event);
+      const id = saveFile(blobOrFile, folderId);
+
+      if (!id) {
+        throw new Error("Drive save failed (file id is empty).");
+      }
+
+      recodeUser(event.source.userId, event.timestamp, id);
+
+      writeDebugLog({
+        event: event.type,
+        messageType,
+        messageId: event?.message?.id,
+        groupId: event?.source?.groupId,
+        userId: event?.source?.userId,
+        status: "saved",
+        note: `driveFileId=${id}`,
+      });
+
+      if (mesFlag === "ON") {
+        const resText = [
+          h.savedText,
+          `https://drive.google.com/file/d/${id}`,
+          "",
+          "保存先フォルダ",
+          `https://drive.google.com/drive/folders/${folderId}`,
+        ].join("\n");
+
+        sendMsg(REPLY_URL, {
+          replyToken: event.replyToken,
+          messages: [
+            {
+              type: "text",
+              text: resText,
+            },
+          ],
+        });
+      }
+    } catch (err) {
+      // どこで失敗したか(取得失敗/保存失敗等)を logs シートに残す
+      writeDebugLog({
+        event: event.type,
+        messageType,
+        messageId: event?.message?.id,
+        groupId: event?.source?.groupId,
+        userId: event?.source?.userId,
+        status: "error",
+        note: String(err),
+      });
+      console.log(err);
     }
   }
 
